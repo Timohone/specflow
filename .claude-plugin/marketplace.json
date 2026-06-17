@@ -6,15 +6,15 @@
     "url": "https://github.com/Timohone"
   },
   "metadata": {
-    "description": "Spec-driven development for Claude Code — disciplined /spec → /plan → /build → /verify workflow.",
-    "version": "0.2.0"
+    "description": "Spec-driven development for Claude Code — disciplined /spec → /plan → /build → /verify workflow with drift guard.",
+    "version": "0.3.0"
   },
   "plugins": [
     {
       "name": "spec-flow",
       "source": "./plugins/spec-flow",
-      "description": "Spec-driven development workflow: subagents for review/planning/verification, a deterministic progress engine, templates, and a SessionStart hook. Stop vibe-coding.",
-      "version": "0.2.0",
+      "description": "Spec-driven development workflow: subagents for review/planning/verification, a deterministic progress engine, templates, a SessionStart hook, and a PreToolUse drift guard. Stop vibe-coding.",
+      "version": "0.3.0",
       "category": "workflow",
       "keywords": ["workflow", "spec-driven", "planning", "verification", "tdd", "subagents", "productivity"],
       "homepage": "https://github.com/Timohone/specflow",

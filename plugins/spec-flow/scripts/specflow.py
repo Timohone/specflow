@@ -122,6 +122,105 @@ def count_checkboxes_section(text: str, keyword: str):
     return 0, 0
 
 
+def load_session_state(state_path: Path, session_id: str) -> dict:
+    """Load `.spec-flow/session-state.json`. Reset to a fresh state if the file
+    is missing, unparseable, or its session_id doesn't match the current one."""
+    fresh = {"session_id": session_id, "warned": []}
+    try:
+        data = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return fresh
+    if not isinstance(data, dict) or data.get("session_id") != session_id:
+        return fresh
+    warned = data.get("warned")
+    if not isinstance(warned, list):
+        return fresh
+    return {"session_id": session_id, "warned": [str(w) for w in warned]}
+
+
+def save_session_state(state_path, state: dict) -> None:
+    """Write session state atomically: write to a unique per-PID temp file then
+    os.replace. Per-PID suffix prevents two concurrent invocations (e.g. a
+    MultiEdit batch) from racing on the same `<path>.tmp` name — the loser
+    of the race would otherwise hit FileNotFoundError on rename."""
+    p = Path(state_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+WHITELIST_BASENAMES = frozenset({
+    ".gitignore", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE",
+    "package.json", "package-lock.json", "pyproject.toml", "requirements.txt",
+})
+
+
+def is_whitelisted(repo_rel_path: str) -> bool:
+    """Return True if drift-check should silently allow this repo-relative path.
+    Whitelist (hard-coded for v0.3.0): anything under `specs/`, plus a small set
+    of dev/config basenames."""
+    p = repo_rel_path
+    if p.startswith("./"):
+        p = p[2:]
+    p = p.lstrip("/")
+    if p == "specs" or p.startswith("specs/"):
+        return True
+    base = p.rsplit("/", 1)[-1]
+    return base in WHITELIST_BASENAMES
+
+
+def _normalize_plan_path(s: str) -> str:
+    """Normalize a plan-entry path: strip whitespace, strip surrounding
+    backticks, strip leading './', collapse repeated '/'. No case folding."""
+    s = s.strip()
+    if len(s) >= 2 and s[0] == "`" and s[-1] == "`":
+        s = s[1:-1].strip()
+    if s.startswith("./"):
+        s = s[2:]
+    while "//" in s:
+        s = s.replace("//", "/")
+    return s
+
+
+def parse_files_to_change(plan_text: str) -> list:
+    """Extract repo-relative paths from the 'Files to change' table in plan.md.
+    Returns [] if the section is missing. Skips the markdown header row and the
+    `|---|` separator row. Empty first cells are skipped."""
+    lines = plan_text.splitlines()
+    headers = []
+    for i, line in enumerate(lines):
+        m = HEADER_RE.match(line)
+        if m:
+            headers.append((i, len(m.group(1)), m.group(2)))
+
+    section_start = section_end = None
+    for idx, (line_no, level, title) in enumerate(headers):
+        if "files" in _norm(title):
+            section_start = line_no + 1
+            section_end = len(lines)
+            for (l2, lev2, _t2) in headers[idx + 1:]:
+                if lev2 <= level:
+                    section_end = l2
+                    break
+            break
+    if section_start is None:
+        return []
+
+    table_rows = [ln for ln in lines[section_start:section_end] if ln.lstrip().startswith("|")]
+    # Skip header row + separator row.
+    data_rows = table_rows[2:] if len(table_rows) >= 2 else []
+    paths = []
+    for row in data_rows:
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        if not cells:
+            continue
+        first = _normalize_plan_path(cells[0])
+        if first:
+            paths.append(first)
+    return paths
+
+
 def has_section(text: str, keyword: str) -> bool:
     keyword = _norm(keyword)
     for line in text.splitlines():
@@ -351,6 +450,78 @@ def cmd_hook_context(args) -> int:
     return 0
 
 
+def _drift_payload(drift_type: str, slug: str, remedy: str) -> str:
+    reason = f"spec-flow: {drift_type} [spec={slug}] — {remedy}"
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": reason,
+        }
+    })
+
+
+def cmd_drift_check(args) -> int:
+    """PreToolUse drift detector. Always exits 0 (never blocks); writes a JSON
+    warning payload to stdout when drift is detected and not yet warned this
+    session."""
+    session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    if not session_id:
+        return 0  # untracked invocation (e.g. running outside Claude Code)
+
+    root = Path(args.root)
+    abs_path = Path(args.path)
+    try:
+        repo_rel = str(abs_path.relative_to(root))
+    except ValueError:
+        # path outside root → fall back to a normalized relative form
+        repo_rel = os.path.relpath(str(abs_path), str(root))
+    repo_rel = _normalize_plan_path(repo_rel)
+
+    # rule 1: whitelist
+    if is_whitelisted(repo_rel):
+        return 0
+
+    # rule 2: no specs/ dir → brand-new repo, stay silent
+    specs_dir = specs_root(root)
+    if not specs_dir.is_dir():
+        return 0
+
+    state_path = root / ".spec-flow" / "session-state.json"
+    state = load_session_state(state_path, session_id)
+
+    def _emit(drift_type: str, slug: str, remedy: str) -> int:
+        if drift_type in state["warned"]:
+            return 0
+        state["warned"].append(drift_type)
+        save_session_state(state_path, state)
+        print(_drift_payload(drift_type, slug, remedy))
+        return 0
+
+    specs = all_specs(root)
+    act = active_spec(specs)
+
+    # rule 3: specs/ exists but no active spec
+    if act is None:
+        return _emit("no_active_spec", "-",
+                     "run /spec before non-trivial edits, or whitelist this path")
+
+    # rule 4: active spec but no plan.md
+    if not act["has_plan"]:
+        return _emit("no_plan", act["slug"],
+                     f"run /plan {act['slug']} to ground the build in the codebase")
+
+    # rule 5: file not in the plan's Files-to-change table
+    plan_text = (specs_dir / act["slug"] / PLAN_FILE).read_text(encoding="utf-8", errors="replace")
+    listed = set(parse_files_to_change(plan_text))
+    if repo_rel not in listed:
+        return _emit(f"unlisted_file:{repo_rel}", act["slug"],
+                     f"add {repo_rel} to plan.md or stop and update the plan")
+
+    # rule 6: listed file → silent allow
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="specflow", description="spec-flow engine")
     p.add_argument("--root", default=os.getcwd(), help="project root (default: cwd)")
@@ -375,6 +546,10 @@ def build_parser() -> argparse.ArgumentParser:
     va.set_defaults(func=cmd_validate)
 
     sub.add_parser("hook-context", help="SessionStart context JSON").set_defaults(func=cmd_hook_context)
+
+    dc = sub.add_parser("drift-check", help="PreToolUse drift detector")
+    dc.add_argument("path", help="absolute path of the file being edited")
+    dc.set_defaults(func=cmd_drift_check)
     return p
 
 

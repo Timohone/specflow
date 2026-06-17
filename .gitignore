@@ -1,3 +1,10 @@
+# spec-flow's own dogfooding feature plans — never ship these in the repo.
+# (Plugin users still get specs/ in their own projects; only this repo ignores it.)
+/specs/
+
+# spec-flow per-session drift-guard state — runtime artifact, never committed.
+.spec-flow/
+
 # Claude Code local state
 .claude/
 .claude-flags/

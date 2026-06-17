@@ -1,7 +1,7 @@
 {
   "name": "spec-flow",
-  "version": "0.2.0",
-  "description": "Spec-driven development for Claude Code. A disciplined /spec -> /plan -> /build -> /verify workflow with specialized subagents, a deterministic progress engine, templates, and a SessionStart hook that surfaces your active spec. Stop vibe-coding.",
+  "version": "0.3.0",
+  "description": "Spec-driven development for Claude Code. A disciplined /spec -> /plan -> /build -> /verify workflow with specialized subagents, a deterministic progress engine, templates, a SessionStart hook that surfaces your active spec, and a PreToolUse drift guard that warns when edits stray from the plan. Stop vibe-coding.",
   "keywords": ["workflow", "spec-driven", "planning", "verification", "tdd", "subagents", "productivity"],
   "author": {
     "name": "Timo Haldi",
