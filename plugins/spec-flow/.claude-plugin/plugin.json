@@ -1,0 +1,13 @@
+{
+  "name": "spec-flow",
+  "version": "0.2.0",
+  "description": "Spec-driven development for Claude Code. A disciplined /spec -> /plan -> /build -> /verify workflow with specialized subagents, a deterministic progress engine, templates, and a SessionStart hook that surfaces your active spec. Stop vibe-coding.",
+  "keywords": ["workflow", "spec-driven", "planning", "verification", "tdd", "subagents", "productivity"],
+  "author": {
+    "name": "Timo Haldi",
+    "email": "haldi.timo@gmail.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/Timohone/specflow",
+  "repository": "https://github.com/Timohone/specflow"
+}
